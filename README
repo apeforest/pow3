@@ -1,0 +1,17 @@
+This folder contains the APIs and data structures for handling 
+Finite State Machine (FSM) in the MCNC blif/kiss2 format.
+
+The fsmToVerilog package can convert a blif file to RTL verilog file of
+a FSM.
+
+The fsmSwitching package reads in encoded FSM in blif format and 
+calculates the total switching actitiy based on total transition 
+probability. The total transition probability is also printed out 
+in a file <fsm_name>.prob
+
+-----------------------
+Data Structure:
+-----------------------
+The FSM data structure is stored in struct.h
+The APIs to read in and store such data structure is in read_fsm.c
+

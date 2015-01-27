@@ -1,0 +1,211 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+#include "struct.h"
+#include "global.h"
+#include "fsm.h"
+
+// global variables
+extern fsm_t *_kiss_fsm;
+
+/* write fsm to verilog file */
+void write_verilog(fsm_t *fsm)
+{
+  FILE *fp_output = NULL;
+  char file_name[64] = "\0";
+  int i,j,k;
+  int code_len = fsm->code_length;
+  int count = 0;
+  int dummy = 0;
+  boolean input_flag = FALSE;
+  state_t *init_state = NULL;
+
+  if(fsm->name)
+    sprintf(file_name, "%s.v", fsm->name);
+  else
+    sprintf(file_name, "temp.v");
+
+  if((fp_output = fopen(file_name, "w")) == NULL) {
+    printf("ERROR: Cannot open input file %s\n", file_name);
+    return;
+  }
+
+
+  // print the verilog file header
+  fprintf(fp_output, "module %s(clk, reset, data_in, data_out);\n", fsm->name);
+  fprintf(fp_output, "%6coutput [%d:0] data_out;\n", ' ', fsm->num_output - 1);
+  fprintf(fp_output, "%6cinput [%d:0] data_in;\n", ' ', fsm->num_input - 1);
+  fprintf(fp_output, "%6cinput clk, reset;\n", ' ');
+  fprintf(fp_output, "%6creg [%d:0] current_state, next_state;\n", ' ', code_len - 1);
+  fprintf(fp_output, "%6creg [%d:0] data_out;\n", ' ', fsm->num_output - 1);
+  for(i = 0; i < fsm->num_state; i++) {
+    fprintf(fp_output, "%6cparameter S_%s = %d'b%s;\n",' ', fsm->state[i].name, code_len, fsm->state[i].code);
+  }
+  fprintf(fp_output, "%6cparameter S_dont_care = %d'bx;\n",' ', code_len);
+  fprintf(fp_output, "\n");
+
+  // print the sequential logic of state transition 
+  fprintf(fp_output, "%6calways@(posedge clk or negedge reset) begin\n", ' ');
+  fprintf(fp_output, "%8cif(reset == 0)\n", ' ');
+  fprintf(fp_output, "\n");
+
+  if((init_state = get_fsm_init_state(fsm, &dummy)) != NULL)
+    fprintf(fp_output, "%10ccurrent_state <= S_%s;\n", ' ', init_state->name);
+  else
+    fprintf(fp_output, "%10ccurrent_state <= S_%s;\n", ' ', fsm->state[0].name);
+  fprintf(fp_output, "%8celse\n",' ');
+  fprintf(fp_output, "%10ccurrent_state <= next_state;\n",' ');
+  fprintf(fp_output, "%6cend\n", ' ');
+  fprintf(fp_output, "\n");
+
+  // print the combinational logic of next state and output
+  fprintf(fp_output, "%6calways@(current_state or data_in) begin\n", ' ');
+  fprintf(fp_output, "%8ccase(current_state)\n", ' ');  
+  for(i = 0; i < fsm->num_state; i++) { 
+    count = 0;
+    fprintf(fp_output, "%10cS_%s: begin\n", ' ', fsm->state[i].name);
+    for(j = 0; j < fsm->num_transition; j++) {
+      if(strcmp((fsm->transition[j].current_state)->name, fsm->state[i].name))
+	continue;
+      if(count == 0) {
+	fprintf(fp_output, "%20cif(", ' ');
+	count ++;
+      }
+      else
+	fprintf(fp_output, "%20celse if(", ' ');
+
+      input_flag = FALSE;
+      if(strchr(fsm->transition[j].input, '-')) {
+	for(k = 0; k < fsm->num_input; k++) {
+	  if(isdigit(fsm->transition[j].input[k])) {
+	    if(input_flag == TRUE)
+	      fprintf(fp_output, " && ");
+	    fprintf(fp_output, "data_in[%d] == 1'b%c", fsm->num_input - k - 1, fsm->transition[j].input[k]);
+	    input_flag = TRUE;
+	  }
+	}
+	if(input_flag == FALSE)
+	  fprintf(fp_output, "1");
+      }
+      else {
+	fprintf(fp_output, "data_in == %d'b%s", fsm->num_input, fsm->transition[j].input);
+      }
+      
+      fprintf(fp_output,")\n");
+      fprintf(fp_output, "%22cbegin\n", ' ');
+      fprintf(fp_output, "%24cnext_state = S_%s;\n", ' ', (fsm->transition[j].next_state)->name);
+      fprintf(fp_output, "%24cdata_out = %d'b", ' ', fsm->num_output);
+      for(k = 0; k < fsm->num_output; k ++) {
+	if(isdigit(fsm->transition[j].output[k]))
+	  fprintf(fp_output, "%c",fsm->transition[j].output[k]);
+	else
+	  fprintf(fp_output, "x");
+      }
+      fprintf(fp_output, ";\n");
+      fprintf(fp_output, "%22cend\n", ' ');
+    }
+    // default transition
+    fprintf(fp_output, "%20celse\n", ' ');
+    fprintf(fp_output, "%22cbegin\n", ' ');
+    fprintf(fp_output, "%24cnext_state = current_state;\n", ' ');
+    fprintf(fp_output, "%24cdata_out = 0;\n", ' ');
+    fprintf(fp_output, "%22cend\n", ' ');
+    fprintf(fp_output, "%10cend // case %d'b%s\n", ' ', code_len, fsm->state[i].code);
+  }
+
+  // default case
+  fprintf(fp_output, "%10cdefault: begin\n", ' ');
+  fprintf(fp_output, "%24cnext_state = S_dont_care;\n", ' ');
+  fprintf(fp_output, "%24cdata_out = %d'bx;\n", ' ', fsm->num_output);
+  fprintf(fp_output, "%10cend\n", ' ');
+  fprintf(fp_output, "%8cendcase\n", ' ');
+  fprintf(fp_output, "%6cend\n", ' ');
+  fprintf(fp_output, "endmodule\n");
+  fclose(fp_output);
+}
+
+/* write the test bench for FSM */
+void write_testbench(fsm_t *fsm)
+{
+  long int num_vector = 0;
+  long int num_diff_vector = 0;
+  long int vector_value = 0;
+  FILE *fp_output = NULL;
+  char file_name[64] = "\0";
+  int i;
+  int code_len = fsm->code_length;
+
+  if(fsm->name)
+    sprintf(file_name, "tb_%s.v", fsm->name);
+  else
+    sprintf(file_name, "tb_temp.v");
+
+  if((fp_output = fopen(file_name, "w")) == NULL) {
+    printf("ERROR: Cannot open input file %s\n", file_name);
+    return;
+  }
+
+  // print the verilog file header
+  fprintf(fp_output, "`timescale 1ns/10ps\n");
+  fprintf(fp_output, "module tb_%s;\n", fsm->name);
+  fprintf(fp_output, "%6creg clock;\n", ' ');
+  fprintf(fp_output, "%6creg reset;\n", ' ');
+  fprintf(fp_output, "%6creg [%d:0] test_in;\n", ' ', fsm->num_input - 1);
+  fprintf(fp_output, "%6cwire [%d:0] test_out;\n", ' ', fsm->num_output - 1);
+  fprintf(fp_output, "\n");
+  fprintf(fp_output, "%6c%s fsm(clock, reset, test_in, test_out);\n", ' ', fsm->name);
+  fprintf(fp_output, "%6calways begin\n", ' ');
+  fprintf(fp_output, "%8c#1 clock = ~clock;\n", ' ');
+  fprintf(fp_output, "%6cend\n", ' ');
+  fprintf(fp_output, "\n");
+  fprintf(fp_output, "%6calways@(posedge clock) begin\n", ' ');
+  fprintf(fp_output, "%8c$display($time,,,\"in = %b out = %b\", test_in, test_out);\n", ' ');
+  fprintf(fp_output, "%6cend\n", ' ');
+  fprintf(fp_output, "\n");
+  fprintf(fp_output, "%6cinitial begin\n", ' ');
+  fprintf(fp_output, "%8c$dumpvars;\n", ' ');
+  fprintf(fp_output, "%8creset = 0; clock = 0; test_in = 0;\n", ' ');
+  fprintf(fp_output, "%8c#2 reset = 1;\n", ' ');
+
+  num_vector = 100;
+  
+  num_diff_vector = (long int)(pow(2, fsm->num_input));
+			       
+  for(i = 0; i < num_vector; i++) {
+    vector_value = rand() % num_diff_vector;
+    fprintf(fp_output, "%8c#2 test_in = %d;\n", ' ', vector_value);
+    fprintf(fp_output, "%8c#18 ;\n", ' ');
+  }
+  fprintf(fp_output, "%8c#10 $finish;\n", ' ');
+  fprintf(fp_output, "%6cend\n", ' ');
+  fprintf(fp_output, "endmodule\n");
+
+  fclose(fp_output);
+}
+
+int main(int argc, char **argv)
+{
+  fsm_t *fsm;
+  char *infile_name;
+  char *outfile_name;
+  char *fsm_name;
+  
+  srand(1);
+
+  infile_name = argv[1];
+  
+  init_fsm();  
+  fsm = get_fsm();
+
+  if(read_fsm_from_blif(infile_name, fsm) == FALSE) {
+    printf("ERROR: Unable to read FSM from the input blif file.\n");
+    free_fsm();
+    exit(1);
+  }
+
+  print_fsm(fsm);
+  write_verilog(fsm);
+  write_testbench(fsm);
+  return 0;
+}

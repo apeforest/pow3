@@ -1,0 +1,1 @@
+../fsmToVerilog/read_fsm.c
